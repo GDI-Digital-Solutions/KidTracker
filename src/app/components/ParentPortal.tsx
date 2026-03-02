@@ -1,20 +1,35 @@
 import { useState, useEffect } from "react";
-import { Calendar, DollarSign, Baby, FileText, Clock, CheckCircle, XCircle, Camera, Image as ImageIcon, Trash2, Smile, Frown, Meh, Zap, Heart, School, Key, Copy, Smartphone } from "lucide-react";
+import { Calendar, DollarSign, Baby, FileText, Clock, CheckCircle, XCircle, Camera, Image as ImageIcon, Trash2, Smile, Frown, Meh, Zap, Heart, School, Key, Copy, Smartphone, Search, Download, CreditCard } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card";
 import { Badge } from "./ui/badge";
 import { useAuth } from "../context/AuthContext";
 import { useData } from "../context/DataContext";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
 import { formatLocalDate, parseLocalDate } from "../../utils/dateUtils";
+import { formatPhone } from "../../lib/formatPhone";
 import { toast } from "sonner";
 import { Button } from "./ui/button";
+import { Input } from "./ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "./ui/select";
+
+const API_BASE = "https://v9iqpcma3c.execute-api.us-east-1.amazonaws.com/prod/api";
 
 export function ParentPortal() {
-  const { currentUser } = useAuth();
+  const { currentUser, currentDaycare } = useAuth();
   const { children, attendance, invoices, activityPhotos, dailyActivities, classrooms, refreshData } = useData();
   const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth());
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
   const [activeTab, setActiveTab] = useState("overview");
+  const [searchTerm, setSearchTerm] = useState("");
+  const [filterStatus, setFilterStatus] = useState<string>("all");
+  const [payingInvoiceId, setPayingInvoiceId] = useState<string | null>(null);
+  const [activeSubTab, setActiveSubTab] = useState<"current" | "history">("current");
 
   // Re-fetch data whenever the Activity Photos tab is opened so parents see the latest photos
   useEffect(() => {
@@ -87,8 +102,147 @@ export function ParentPortal() {
     totalOwed: myInvoices
       .filter(inv => inv.status === "pending" || inv.status === "overdue")
       .reduce((sum, inv) => sum + inv.amount, 0),
+    totalPaid: myInvoices
+      .filter(inv => inv.status === "paid")
+      .reduce((sum, inv) => sum + inv.amount, 0),
     daysPresent: currentMonthAttendance.filter(att => att.status === "present").length,
     daysAbsent: currentMonthAttendance.filter(att => att.status === "absent").length,
+  };
+
+  // Filtered invoices for the Billing & Payments tab
+  const filteredInvoices = myInvoices.filter(invoice => {
+    const child = children.find(c => c.id === invoice.childId);
+    const matchesSearch = child
+      ? `${child.firstName} ${child.lastName}`.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        invoice.invoiceNumber.toLowerCase().includes(searchTerm.toLowerCase())
+      : invoice.invoiceNumber.toLowerCase().includes(searchTerm.toLowerCase());
+    const matchesStatus = filterStatus === "all" || invoice.status === filterStatus;
+    return matchesSearch && matchesStatus;
+  });
+
+  const unpaidInvoices = filteredInvoices.filter(inv => inv.status !== "paid");
+  const paidInvoices = filteredInvoices.filter(inv => inv.status === "paid");
+
+  // Pay invoice via Stripe Checkout
+  const handlePayInvoice = async (invoiceId: string) => {
+    setPayingInvoiceId(invoiceId);
+    try {
+      const res = await fetch(`${API_BASE}/stripe/create-invoice-payment`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          invoiceId,
+          daycareId: currentDaycare?.id || currentUser?.daycareId,
+          successUrl: window.location.origin,
+          cancelUrl: window.location.origin,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to create payment session");
+
+      if (data.url) {
+        window.location.href = data.url;
+      }
+    } catch (error: any) {
+      console.error("Payment error:", error);
+      toast.error(error.message || "Failed to initiate payment. Please try again.");
+    } finally {
+      setPayingInvoiceId(null);
+    }
+  };
+
+  // Download invoice as printable PDF
+  const handleDownloadPDF = (invoice: any) => {
+    const child = children.find(c => c.id === invoice.childId);
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) {
+      toast.error('Please allow pop-ups to download invoices');
+      return;
+    }
+
+    const invoiceHTML = `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>Invoice ${invoice.invoiceNumber}</title>
+          <style>
+            * { box-sizing: border-box; }
+            body { font-family: Arial, sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; color: #333; }
+            .header { text-align: center; margin-bottom: 40px; border-bottom: 3px solid #1d4ed8; padding-bottom: 20px; }
+            .header h1 { color: #1d4ed8; margin: 0; font-size: 28px; }
+            .header p { color: #666; margin: 5px 0 0 0; font-size: 14px; }
+            .invoice-details { display: table; width: 100%; margin-bottom: 30px; }
+            .invoice-details > div { display: table-cell; width: 50%; padding: 5px; }
+            .section { margin-bottom: 20px; word-wrap: break-word; }
+            .section-title { font-weight: bold; color: #1d4ed8; margin-bottom: 5px; font-size: 14px; }
+            .amount { font-size: 32px; font-weight: bold; color: #1d4ed8; margin: 20px 0; }
+            .status { display: inline-block; padding: 5px 15px; border-radius: 20px; font-size: 14px; font-weight: bold; text-transform: uppercase; }
+            .status.paid { background-color: #22c55e; color: white; }
+            .status.pending { background-color: #f59e0b; color: white; }
+            .status.overdue { background-color: #dc2626; color: white; }
+            .footer { margin-top: 60px; text-align: center; color: #666; font-size: 12px; border-top: 1px solid #ddd; padding-top: 20px; }
+            @media print { body { margin: 0; padding: 15px; max-width: 100%; } .invoice-details { page-break-inside: avoid; } }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <h1>KidTrackerApp\u2122</h1>
+            <p>Powered by GDI Digital Solutions</p>
+          </div>
+          <div class="invoice-details">
+            <div class="section">
+              <div class="section-title">Invoice Number</div>
+              <div>${invoice.invoiceNumber}</div>
+            </div>
+            <div class="section">
+              <div class="section-title">Status</div>
+              <div><span class="status ${invoice.status}">${invoice.status}</span></div>
+            </div>
+          </div>
+          <div class="section">
+            <div class="section-title">Bill To</div>
+            <div>${child?.firstName} ${child?.lastName}</div>
+            <div style="color: #666; font-size: 14px;">${child?.parentName || ''}</div>
+            <div style="color: #666; font-size: 14px;">${child?.parentEmail || ''}</div>
+            <div style="color: #666; font-size: 14px;">${formatPhone(child?.parentPhone)}</div>
+          </div>
+          <div class="section">
+            <div class="section-title">Invoice Date</div>
+            <div>${new Date(invoice.createdAt).toLocaleDateString()}</div>
+          </div>
+          <div class="section">
+            <div class="section-title">Due Date</div>
+            <div>${parseLocalDate(invoice.dueDate).toLocaleDateString()}</div>
+          </div>
+          ${invoice.paidDate ? `
+            <div class="section">
+              <div class="section-title">Paid Date</div>
+              <div>${parseLocalDate(invoice.paidDate).toLocaleDateString()}</div>
+            </div>
+          ` : ''}
+          ${invoice.description ? `
+            <div class="section">
+              <div class="section-title">Description</div>
+              <div style="font-size: 14px; line-height: 1.5;">${invoice.description}</div>
+            </div>
+          ` : ''}
+          <div class="section">
+            <div class="section-title">Amount Due</div>
+            <div class="amount">$${invoice.amount.toFixed(2)}</div>
+          </div>
+          <div class="footer">
+            <p>Thank you for your business!</p>
+            <p>Generated on ${new Date().toLocaleDateString()} at ${new Date().toLocaleTimeString()}</p>
+          </div>
+          <script>window.onload = function() { window.print(); }</script>
+        </body>
+      </html>
+    `;
+
+    printWindow.document.write(invoiceHTML);
+    printWindow.document.close();
+    toast.success('Invoice ready for download');
   };
 
   const copyParentCode = (code: string) => {
@@ -259,12 +413,12 @@ export function ParentPortal() {
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm">Total Invoices</CardTitle>
+            <CardTitle className="text-sm">Total Paid</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="flex items-center gap-2">
-              <FileText className="h-4 w-4 text-blue-600" />
-              <p className="text-2xl font-bold">{stats.totalInvoices}</p>
+              <CheckCircle className="h-4 w-4 text-green-600" />
+              <p className="text-2xl font-bold">${stats.totalPaid.toFixed(2)}</p>
             </div>
           </CardContent>
         </Card>
@@ -314,7 +468,10 @@ export function ParentPortal() {
           <TabsTrigger value="attendance">Attendance History</TabsTrigger>
           <TabsTrigger value="activities">Daily Activities</TabsTrigger>
           <TabsTrigger value="photos">Activity Photos</TabsTrigger>
-          <TabsTrigger value="invoices">Invoices</TabsTrigger>
+          <TabsTrigger value="invoices">
+            <CreditCard className="h-4 w-4 mr-1" />
+            Billing & Payments
+          </TabsTrigger>
         </TabsList>
 
         {/* Attendance Tab */}
@@ -677,99 +834,198 @@ export function ParentPortal() {
           </Card>
         </TabsContent>
 
-        {/* Invoices Tab */}
+        {/* Billing & Payments Tab */}
         <TabsContent value="invoices">
-          <Card>
-            <CardHeader>
-              <CardTitle>Your Invoices</CardTitle>
-              <CardDescription>
-                View and track your payment history
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="rounded-lg border">
-                <div className="overflow-x-auto">
-                  <table className="w-full">
-                    <thead className="bg-gray-50 border-b">
-                      <tr>
-                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
-                          Invoice #
-                        </th>
-                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
-                          Child
-                        </th>
-                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
-                          Description
-                        </th>
-                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
-                          Amount
-                        </th>
-                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
-                          Due Date
-                        </th>
-                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
-                          Status
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody className="bg-white divide-y divide-gray-200">
-                      {myInvoices.length === 0 ? (
-                        <tr>
-                          <td colSpan={6} className="px-4 py-8 text-center text-gray-500">
-                            No invoices found
-                          </td>
-                        </tr>
-                      ) : (
-                        myInvoices
-                          .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-                          .map((invoice) => {
-                            const child = children.find(c => c.id === invoice.childId);
-                            return (
-                              <tr key={invoice.id} className="hover:bg-gray-50">
-                                <td className="px-4 py-4 whitespace-nowrap">
-                                  <span className="font-mono text-sm">{invoice.invoiceNumber}</span>
-                                </td>
-                                <td className="px-4 py-4 whitespace-nowrap">
-                                  <div className="font-medium">
-                                    {child?.firstName} {child?.lastName}
-                                  </div>
-                                </td>
-                                <td className="px-4 py-4">
-                                  <div className="text-sm max-w-xs truncate">
-                                    {invoice.description}
-                                  </div>
-                                </td>
-                                <td className="px-4 py-4 whitespace-nowrap">
-                                  <span className="font-medium">${invoice.amount.toFixed(2)}</span>
-                                </td>
-                                <td className="px-4 py-4 whitespace-nowrap text-sm">
-                                  {parseLocalDate(invoice.dueDate).toLocaleDateString()}
-                                </td>
-                                <td className="px-4 py-4 whitespace-nowrap">
-                                  <Badge
-                                    variant="outline"
-                                    className={
-                                      invoice.status === "paid"
-                                        ? "border-green-500 bg-green-50 text-green-700"
-                                        : invoice.status === "overdue"
-                                        ? "border-blue-600 bg-blue-50 text-blue-800"
-                                        : "border-yellow-500 bg-yellow-50 text-yellow-700"
-                                    }
-                                  >
-                                    {invoice.status === "paid" ? "Paid" : 
-                                     invoice.status === "overdue" ? "Overdue" : "Pending"}
-                                  </Badge>
-                                </td>
-                              </tr>
-                            );
-                          })
-                      )}
-                    </tbody>
-                  </table>
+          {/* Financial Summary Cards */}
+          <div className="grid gap-4 grid-cols-2 lg:grid-cols-4 mb-6">
+            <Card className="border-blue-200 bg-gradient-to-br from-blue-50 to-white">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm text-blue-900">Total Owed</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="flex items-center gap-2">
+                  <DollarSign className="h-4 w-4 text-blue-700" />
+                  <p className="text-2xl font-bold text-blue-800">${stats.totalOwed.toFixed(2)}</p>
                 </div>
-              </div>
-            </CardContent>
-          </Card>
+              </CardContent>
+            </Card>
+
+            <Card className="border-green-200 bg-gradient-to-br from-green-50 to-white">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm text-green-900">Total Paid</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="flex items-center gap-2">
+                  <CheckCircle className="h-4 w-4 text-green-600" />
+                  <p className="text-2xl font-bold text-green-700">${stats.totalPaid.toFixed(2)}</p>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="border-yellow-200 bg-gradient-to-br from-yellow-50 to-white">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm text-yellow-900">Pending</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="flex items-center gap-2">
+                  <Clock className="h-4 w-4 text-yellow-600" />
+                  <p className="text-2xl font-bold text-yellow-700">{stats.pendingInvoices}</p>
+                </div>
+                <p className="text-xs text-yellow-600 mt-1">invoices</p>
+              </CardContent>
+            </Card>
+
+            <Card className="border-red-200 bg-gradient-to-br from-red-50 to-white">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm text-red-900">Overdue</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="flex items-center gap-2">
+                  <XCircle className="h-4 w-4 text-red-600" />
+                  <p className="text-2xl font-bold text-red-700">{stats.overdueInvoices}</p>
+                </div>
+                <p className="text-xs text-red-600 mt-1">invoices</p>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Search and Filter Bar */}
+          <div className="flex flex-col sm:flex-row gap-4 mb-6">
+            <div className="flex-1 flex items-center gap-2">
+              <Search className="h-4 w-4 text-muted-foreground" />
+              <Input
+                placeholder="Search by child name or invoice number..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+              />
+            </div>
+            <Select value={filterStatus} onValueChange={setFilterStatus}>
+              <SelectTrigger className="w-[180px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Status</SelectItem>
+                <SelectItem value="pending">Pending</SelectItem>
+                <SelectItem value="paid">Paid</SelectItem>
+                <SelectItem value="overdue">Overdue</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Sub-tabs: Current Invoices / Payment History */}
+          <div className="flex gap-2 mb-4">
+            <Button
+              variant={activeSubTab === "current" ? "default" : "outline"}
+              size="sm"
+              onClick={() => setActiveSubTab("current")}
+              className={activeSubTab === "current" ? "bg-blue-700 hover:bg-blue-800" : ""}
+            >
+              Current Invoices ({unpaidInvoices.length})
+            </Button>
+            <Button
+              variant={activeSubTab === "history" ? "default" : "outline"}
+              size="sm"
+              onClick={() => setActiveSubTab("history")}
+              className={activeSubTab === "history" ? "bg-blue-700 hover:bg-blue-800" : ""}
+            >
+              Payment History ({paidInvoices.length})
+            </Button>
+          </div>
+
+          {/* Invoice Cards */}
+          <div className="grid gap-4">
+            {(activeSubTab === "current" ? unpaidInvoices : paidInvoices)
+              .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+              .map((invoice) => {
+                const child = children.find(c => c.id === invoice.childId);
+                return (
+                  <Card key={invoice.id}>
+                    <CardHeader>
+                      <div className="flex items-start justify-between">
+                        <div>
+                          <CardTitle className="text-base">Invoice #{invoice.invoiceNumber}</CardTitle>
+                          <p className="text-sm text-muted-foreground mt-1">
+                            {child?.firstName} {child?.lastName}
+                          </p>
+                        </div>
+                        <Badge
+                          variant="outline"
+                          className={
+                            invoice.status === "paid"
+                              ? "border-green-500 bg-green-50 text-green-700"
+                              : invoice.status === "overdue"
+                              ? "border-red-500 bg-red-50 text-red-700"
+                              : "border-yellow-500 bg-yellow-50 text-yellow-700"
+                          }
+                        >
+                          {invoice.status === "paid" ? "Paid" :
+                           invoice.status === "overdue" ? "Overdue" : "Pending"}
+                        </Badge>
+                      </div>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="space-y-4">
+                        <div className="grid md:grid-cols-2 gap-4">
+                          <div>
+                            <p className="text-sm text-muted-foreground">Amount</p>
+                            <p className="text-2xl font-bold">${invoice.amount.toFixed(2)}</p>
+                          </div>
+                          <div>
+                            <p className="text-sm text-muted-foreground">Due Date</p>
+                            <p className="font-medium">{parseLocalDate(invoice.dueDate).toLocaleDateString()}</p>
+                            {invoice.paidDate && (
+                              <>
+                                <p className="text-sm text-muted-foreground mt-2">Paid Date</p>
+                                <p className="text-sm text-green-700">{parseLocalDate(invoice.paidDate).toLocaleDateString()}</p>
+                              </>
+                            )}
+                          </div>
+                        </div>
+
+                        {invoice.description && (
+                          <div>
+                            <p className="text-sm text-muted-foreground">Description</p>
+                            <p className="text-sm mt-1">{invoice.description}</p>
+                          </div>
+                        )}
+
+                        <div className="flex flex-wrap gap-2 pt-4 border-t">
+                          {invoice.status !== "paid" && (
+                            <Button
+                              size="sm"
+                              className="bg-green-600 hover:bg-green-700"
+                              onClick={() => handlePayInvoice(invoice.id)}
+                              disabled={payingInvoiceId === invoice.id}
+                            >
+                              <CreditCard className="mr-2 h-4 w-4" />
+                              {payingInvoiceId === invoice.id ? "Redirecting..." : "Pay Now"}
+                            </Button>
+                          )}
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleDownloadPDF(invoice)}
+                          >
+                            <Download className="mr-2 h-4 w-4" />
+                            Download PDF
+                          </Button>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                );
+              })}
+
+            {(activeSubTab === "current" ? unpaidInvoices : paidInvoices).length === 0 && (
+              <Card>
+                <CardContent className="py-8 text-center text-muted-foreground">
+                  {activeSubTab === "current"
+                    ? "No outstanding invoices. You're all caught up!"
+                    : "No payment history yet."}
+                </CardContent>
+              </Card>
+            )}
+          </div>
         </TabsContent>
       </Tabs>
     </div>

@@ -615,6 +615,23 @@ exports.handler = async (event) => {
         switch (stripeEvent.type) {
           case 'checkout.session.completed': {
             const session = stripeEvent.data.object;
+
+            // Handle one-time invoice payment
+            if (session.metadata?.type === 'invoice_payment') {
+              const invoiceId = session.metadata.invoiceId;
+              const invDaycareId = session.metadata.daycareId;
+              if (invoiceId) {
+                const today = new Date().toISOString().split('T')[0];
+                await db.query(
+                  `UPDATE invoices SET status = 'paid', paid_date = $1 WHERE id = $2 AND daycare_id = $3`,
+                  [today, invoiceId, invDaycareId]
+                );
+                console.log(`Invoice ${invoiceId} marked as paid via Stripe payment`);
+              }
+              break;
+            }
+
+            // Handle subscription checkout
             const daycareId = session.metadata?.daycareId;
             const plan = session.metadata?.plan;
             const subscriptionId = session.subscription;
@@ -703,6 +720,61 @@ exports.handler = async (event) => {
         });
 
         return { statusCode: 200, headers, body: JSON.stringify({ url: session.url }) };
+      }
+
+      // ── POST /api/stripe/create-invoice-payment ─────────────────────────
+      if (stripeAction === 'create-invoice-payment' && method === 'POST') {
+        const { invoiceId, daycareId, successUrl, cancelUrl } = body;
+
+        if (!invoiceId || !daycareId) {
+          return { statusCode: 400, headers, body: JSON.stringify({ error: 'Missing invoiceId or daycareId' }) };
+        }
+
+        // Look up the invoice
+        const invResult = await db.query('SELECT * FROM invoices WHERE id = $1 AND daycare_id = $2', [invoiceId, daycareId]);
+        const invoice = invResult.rows[0];
+        if (!invoice) {
+          return { statusCode: 404, headers, body: JSON.stringify({ error: 'Invoice not found' }) };
+        }
+        if (invoice.status === 'paid') {
+          return { statusCode: 400, headers, body: JSON.stringify({ error: 'Invoice is already paid' }) };
+        }
+
+        // Look up the child to get parent email
+        const childResult = await db.query('SELECT * FROM children WHERE id = $1 AND daycare_id = $2', [invoice.child_id, daycareId]);
+        const child = childResult.rows[0];
+        let parentEmail = null;
+        if (child && child.parent_email) {
+          const encKey = await getEncryptionKey();
+          parentEmail = decrypt(child.parent_email, encKey);
+        }
+
+        // Create one-time Stripe Checkout Session
+        const session = await stripe.checkout.sessions.create({
+          mode: 'payment',
+          ...(parentEmail ? { customer_email: parentEmail } : {}),
+          line_items: [{
+            price_data: {
+              currency: 'usd',
+              product_data: {
+                name: `Invoice #${invoice.invoice_number}`,
+                description: invoice.description || 'Childcare Services',
+              },
+              unit_amount: Math.round(parseFloat(invoice.amount) * 100),
+            },
+            quantity: 1,
+          }],
+          success_url: (successUrl || 'http://localhost:5173') + '?invoice_payment=success&invoice_id=' + invoiceId,
+          cancel_url: (cancelUrl || 'http://localhost:5173') + '?invoice_payment=cancelled',
+          metadata: {
+            type: 'invoice_payment',
+            invoiceId: invoiceId,
+            daycareId: daycareId,
+            invoiceNumber: invoice.invoice_number,
+          },
+        });
+
+        return { statusCode: 200, headers, body: JSON.stringify({ sessionId: session.id, url: session.url }) };
       }
 
       return { statusCode: 404, headers, body: JSON.stringify({ error: `Unknown Stripe action: ${stripeAction}` }) };

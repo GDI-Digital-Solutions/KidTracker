@@ -32,7 +32,7 @@ type Page = "dashboard" | "children" | "attendance" | "activities" | "classrooms
 
 function AppContent() {
   const { isAuthenticated, isAdmin, isSuperAdmin, currentUser, currentDaycare, setCurrentDaycare, refreshCurrentDaycare, logout, logoutCount } = useAuth();
-  const { companyInfo } = useData();
+  const { companyInfo, refreshData: refreshAllData } = useData();
   const [showTrialSignup, setShowTrialSignup] = useState(false);
   const [showForgotPassword, setShowForgotPassword] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -90,6 +90,22 @@ function AppContent() {
       toast.success("Payment successful! Your subscription is now active.");
     } else if (payment === "cancelled") {
       toast.info("Payment was cancelled. You can upgrade anytime from Billing.");
+    }
+  }, [isAuthenticated]);
+
+  // Detect Stripe invoice payment redirect (?invoice_payment=success or ?invoice_payment=cancelled)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const invoicePayment = params.get("invoice_payment");
+    if (!invoicePayment) return;
+
+    window.history.replaceState({}, "", window.location.pathname);
+
+    if (invoicePayment === "success") {
+      refreshAllData();
+      toast.success("Invoice payment successful! Thank you.");
+    } else if (invoicePayment === "cancelled") {
+      toast.info("Payment was cancelled. You can pay anytime from the Billing & Payments tab.");
     }
   }, [isAuthenticated]);
 
