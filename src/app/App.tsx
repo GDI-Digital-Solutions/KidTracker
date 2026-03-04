@@ -34,7 +34,7 @@ type Page = "dashboard" | "children" | "attendance" | "activities" | "classrooms
 
 function AppContent() {
   const { isAuthenticated, isAdmin, isSuperAdmin, currentUser, currentDaycare, setCurrentDaycare, refreshCurrentDaycare, logout, logoutCount } = useAuth();
-  const { companyInfo, refreshData: refreshAllData } = useData();
+  const { companyInfo, refreshData: refreshAllData, updateInvoice } = useData();
 
   // Inactivity timeout — auto-logout after 10 minutes of no activity
   const handleIdleTimeout = useCallback(() => {
@@ -119,10 +119,23 @@ function AppContent() {
     const invoicePayment = params.get("invoice_payment");
     if (!invoicePayment) return;
 
+    const invoiceId = params.get("invoice_id");
     window.history.replaceState({}, "", window.location.pathname);
 
     if (invoicePayment === "success") {
+      // Immediately update the specific invoice locally and in DB
+      // so both Invoicing and Financials reflect the payment right away,
+      // even if the Stripe webhook hasn't processed yet.
+      if (invoiceId) {
+        updateInvoice(invoiceId, {
+          status: 'paid' as const,
+          paidDate: new Date().toISOString().split('T')[0],
+        });
+      }
+      // Also refresh all data to catch any other webhook-driven changes
       refreshAllData();
+      // Delayed re-fetch to pick up any webhook updates that arrive after redirect
+      setTimeout(() => refreshAllData(), 3000);
       toast.success("Invoice payment successful! Thank you.");
     } else if (invoicePayment === "cancelled") {
       toast.info("Payment was cancelled. You can pay anytime from the Billing & Payments tab.");

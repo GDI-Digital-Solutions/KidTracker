@@ -618,6 +618,7 @@ export function DataProvider({ children: reactChildren }: { children: ReactNode 
   };
 
   const updateInvoice = async (id: string, updates: Partial<Invoice>) => {
+    const daycareId = getDaycareId();
     const dbUpdates: any = {};
     if (updates.amount !== undefined) dbUpdates.amount = updates.amount;
     if (updates.dueDate !== undefined) dbUpdates.due_date = updates.dueDate;
@@ -625,7 +626,9 @@ export function DataProvider({ children: reactChildren }: { children: ReactNode 
     if (updates.status !== undefined) dbUpdates.status = updates.status;
     if (updates.description !== undefined) dbUpdates.description = updates.description;
 
-    const { error } = await supabase.from("invoices").update(dbUpdates).eq("id", id);
+    let query = supabase.from("invoices").update(dbUpdates).eq("id", id);
+    if (daycareId) query = query.eq("daycare_id", daycareId);
+    const { error } = await query;
 
     if (error) {
       console.error("Error updating invoice:", error);
